@@ -5,6 +5,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use std::{
+        char::REPLACEMENT_CHARACTER,
         num::IntErrorKind::NegOverflow,
         sync::atomic::{
             AtomicU32, AtomicUsize,
@@ -43,16 +44,23 @@ mod test {
 
     #[test]
     fn id_allocations() {
+        static NEXT_ID: AtomicU32 = AtomicU32::new(0);
+
         fn allocate_new_id() -> u32 {
-            static NEXT_Id: AtomicU32 = AtomicU32::new(0);
-            let id = NEXT_Id.fetch_add(1, Relaxed);
+            let id = NEXT_ID.fetch_add(1, Relaxed);
             id
         }
 
-        for _ in 0..1000 {
-            let id = allocate_new_id();
-            println!("next id: {id}");
+        let mut handles = vec![];
+        for _ in 0..4 {
+            handles.push(std::thread::spawn(|| {
+                for _ in 0..250 {
+                    let id = allocate_new_id();
+                    println!("next id: {id}");
+                }
+            }));
         }
+        handles.into_iter().for_each(|h| h.join().unwrap());
     }
 
     #[test]
@@ -76,17 +84,81 @@ mod test {
 
     #[test]
     fn lazy_initilization() {
+        fn get_random_key() -> u32 {
+            2
+        }
+
         fn get_key() -> u32 {
             static KEY: AtomicU32 = AtomicU32::new(0);
             let key = KEY.load(Relaxed);
             if key == 0 {
-                let new_key = get_randome_key();
+                let new_key = get_random_key();
                 return match KEY.compare_exchange(key, new_key, Relaxed, Relaxed) {
                     Ok(_) => new_key,
                     Err(v) => v,
                 };
             }
             key
+        }
+    }
+
+    #[test]
+    fn memory_orering() {
+        {
+            static X: AtomicU32 = AtomicU32::new(0);
+            fn a() {
+                X.store(1, Relaxed);
+                let t = std::thread::spawn(f);
+                X.store(2, Relaxed);
+                t.join();
+                X.store(3, Relaxed);
+            }
+
+            fn f() {
+                let x = X.load(Relaxed);
+                assert!(x == 1 || x == 2);
+            }
+        }
+
+        {
+            static X: AtomicU32 = AtomicU32::new(0);
+
+            fn a() {
+                X.fetch_add(5, Relaxed);
+                X.fetch_add(10, Relaxed);
+            }
+
+            fn b() {
+                let a = X.load(Relaxed);
+                let b = X.load(Relaxed);
+                let c = X.load(Relaxed);
+                let d = X.load(Relaxed);
+                println!("{a} {b} {c} {d}");
+            }
+
+            // Relaxed ordering do not provide any happens before relationships
+            // but they do provide a total order of modifications on each inddividual Atomic
+            // So if a() and b() were to be executed by multiple threads
+            // there is only one order of modification for a
+            // 0 -> 5 -> 15
+            // and for b the print statement can print
+            // 0 0 0 0 | 0 0 0 15 | 0 0 5 15 | 0 5 15 15 | 5, 15, 15, 15 | 15, 15, 15, 15
+            // but: 0 5 0 15 or 0 15 0 0 is impossible
+
+            fn a1() {
+                X.fetch_add(5, Relaxed);
+            }
+            fn a2() {
+                X.fetch_add(10, Relaxed);
+            }
+
+            // Now here if two separate threads were to execute a1 and a2 then the only orders of modifications are
+            // 0 -> 5 -> 15 or 0 -> 10 -> 15, depending on which fetch_add executes first.
+            // whichever happens, all threads observde the same order, even if we have 100s of additional threads executing the
+            // b() function, we know for sure that if one of them prints 10, the order must be 0 -> 10 -> 15 and there is no way that
+            // we see a 5 in them and vice vers for seeing 5 first and never observing 10.
+            // REMEMBER THIS IS ALL THE THREADS, once the ordering happens the same state is observed by all the threads
+            // using that Atomic.
         }
     }
 }
