@@ -8,9 +8,10 @@ mod test {
         char::REPLACEMENT_CHARACTER,
         num::IntErrorKind::NegOverflow,
         sync::atomic::{
-            AtomicU32, AtomicUsize,
+            AtomicBool, AtomicU32, AtomicU64, AtomicUsize,
             Ordering::{Relaxed, SeqCst},
         },
+        thread,
         time::Duration,
     };
 
@@ -159,6 +160,55 @@ mod test {
             // we see a 5 in them and vice vers for seeing 5 first and never observing 10.
             // REMEMBER THIS IS ALL THE THREADS, once the ordering happens the same state is observed by all the threads
             // using that Atomic.
+        }
+
+        // Acq release
+        {
+            use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+            static DATA: AtomicU64 = AtomicU64::new(0);
+            static READY: AtomicBool = AtomicBool::new(false);
+
+            {
+                fn main() {
+                    thread::spawn(|| {
+                        DATA.store(123, Relaxed);
+                        READY.store(true, Release);
+                    });
+
+                    while !READY.load(Acquire) {
+                        thread::sleep(Duration::from_millis(100));
+                        println!("waiting...");
+                    }
+                    println!("{}", DATA.load(Relaxed));
+                }
+            }
+
+            {
+                static mut DATA: String = String::new();
+                static LOCKED: AtomicBool = AtomicBool::new(false);
+
+                // Happens before relationship b/w unlocking a mutex and subsequently locking it.
+                fn f() {
+                    if LOCKED
+                        .compare_exchange(false, true, Acquire, Relaxed)
+                        .is_ok()
+                    {
+                        // Safety: we hold a mutex so its safe
+                        unsafe {
+                            DATA.push('!');
+                        };
+                        LOCKED.store(false, Release);
+                    }
+                }
+                fn main() {
+                    thread::scope(|s| {
+                        for _ in 0..100 {
+                            s.spawn(f);
+                        }
+                    })
+                }
+                main()
+            }
         }
     }
 }
