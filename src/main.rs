@@ -5,11 +5,9 @@ fn main() {
 #[cfg(test)]
 mod test {
     use std::{
-        char::REPLACEMENT_CHARACTER,
-        num::IntErrorKind::NegOverflow,
         sync::atomic::{
             AtomicBool, AtomicU32, AtomicU64, AtomicUsize,
-            Ordering::{Relaxed, SeqCst},
+            Ordering::{Acquire, Relaxed, Release},
         },
         thread,
         time::Duration,
@@ -208,6 +206,29 @@ mod test {
                     })
                 }
                 main()
+            }
+        }
+
+        // Atomic pointer
+        {
+            use std::sync::atomic::AtomicPtr;
+
+            fn generate_data() -> Box<i32> {
+                Box::new(100)
+            }
+
+            fn get_data() -> &'static Data {
+                static PTR: AtomicPtr<Data> = AtomicPtr::new(std::ptr::null_mut());
+                let mut p = PTR.load(Acquire);
+                if p.is_null() {
+                    p = Box::into_raw(Box::new(generate_data()));
+                    if let Err(e) = PTR.compare_exchange(std::ptr::null_mut(), p, Release, Acquire)
+                    {
+                        drop(unsafe { Box::from_raw(p) });
+                        p = e;
+                    }
+                }
+                unsafe { &*p }
             }
         }
     }
